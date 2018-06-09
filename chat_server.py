@@ -27,13 +27,17 @@ class Servidor:
     """
 
     def __init__(self, host, port):
+        """Inicializador del socket servidor."""
+
         logging.info('Inicializando el servidor...')
-        self.clientes = []
-        # crear socket
+
+        self.server_addr = (host, port)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.clientes = []
 
         try:
             self.sock.bind((host, int(port)))
+            self.sock.listen(10)
 
         except PermissionError:
             logging.error(
@@ -52,98 +56,64 @@ class Servidor:
             )
             sys.exit(1)
 
-        self.sock.listen(10)
-        self.sock.setblocking(False)
+    def handler(self, client, addr):
+        """
+        Recibe los mensajes y los envia a todos los clientes
+        en la lista de clientes omitiendo al emisor.
+        """
 
-        conexiones = threading.Thread(
-            name='Conexiones', target=self.conexiones
-        )
-        procesar_msj = threading.Thread(
-            name='Procesar Mensajes', target=self.procesar_mensajes
-        )
-
-        conexiones.setDaemon(True)
-        conexiones.start()
-        procesar_msj.setDaemon(True)
-        procesar_msj.start()
-
-        logging.info("Servidor escuchando en {}:{}".format(host, port))
-
+        logging.info("Nuevo cliente conectado {:s}:{:d}".format(*addr))
         while True:
-            try:
-                mensaje = input(
-                    '{} {} {} {}\n\n'.format(
-                        c.VERDE, '\n[Escribe `q` para detener el servidor]',
-                        'Esperando conexiones...', c.ENDC
-                    )
-                )
-                if mensaje == 'q':
-                    self.sock.close()
-                    sys.exit(0)
-                else:
-                    pass
-            except KeyboardInterrupt:
-                logging.info('El servidor se ha detenido')
-                sys.exit(0)
-
-    def mensajes(self, mensaje, cliente):
-        """
-        Maneja los mensajes recividos de los clientes
-        y lo envia a los demas clientes conectados omitiendo
-        el emisor del mensaje.
-        """
-
-        for i in self.clientes:
-            try:
-                if i != cliente:
-                    i.send(mensaje)
+            msj = client.recv(1024)
+            for cliente in self.clientes:
+                if cliente != client:
+                    cliente.send(msj)
                 else:
                     continue
-            except Exception as e:
-                raise e
 
-    def conexiones(self):
-        """
-        Detecta cada nuevo cliente conectado y lo agrega a la lista de
-        clientes.
-        """
+            if not msj:
+                self.clientes.remove(client)
+                logging.info(
+                    "El cliente {:s}:{:d} se ha desconectado".format(*addr)
+                )
+                break
+
+    def run(self):
+        logging.info(
+            "Servidor escuchando en {:s}:{:d} presione <Ctrl+C> para detenerlo"
+            .format(*self.server_addr)
+        )
 
         while True:
             try:
-                cliente, addr = self.sock.accept()
-                logging.info(
-                    'Nuevo cliente conectado desde {}:{}'
-                    .format(addr[0], addr[1])
+                client, addr = self.sock.accept()
+                client_thread = threading.Thread(
+                    target=self.handler, args=(client, addr,)
                 )
-                cliente.setblocking(False)
-                self.clientes.append(cliente)
+                client_thread.setDaemon(True)
+                client_thread.start()
+                # agregar cliente a la lista de clientes
+                self.clientes.append(client)
 
-            except BlockingIOError:
-                pass
+            except KeyboardInterrupt:
+                log = logging.getLogger('Servidor')
+                self.sock.close()
+                log.info('El servidor se ha detenido')
+                sys.exit(0)
 
-    def procesar_mensajes(self):
-        """
-        Verifica si hay algun cliente en la lista de clientes
-        para recibir el mensaje y enviarlo pasandolo a l metodo
-        mensajes que es el encargado de enviarlo a los clientes.
-        """
-
-        while True:
-            if len(self.clientes) > 0:
-                for i in self.clientes:
-                    try:
-                        mensaje = i.recv(4096)
-                        if mensaje:
-                            self.mensajes(mensaje, i)
-                    except BlockingIOError:
-                        pass
+            except Exception as e:
+                # en caso de darse otra excepcion importante
+                # que no se halla tomado en cuenta
+                logging.warning("Algo anda mal: %s", e)
+                input()
 
 
 class Cliente:
     """Socket cliente que interactua con el servidor."""
 
     def __init__(self, host, port):
-        # crear socket cliente
+        """Inicializador del socket cliente"""
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # conectar al socket servidor
         try:
@@ -203,9 +173,8 @@ class Cliente:
                 msj = self.sock.recv(4096)
                 if msj:
                     decoded_msj = base64.b64decode(msj)
-                    log = logging.getLogger('Nuevo Mensaje')
                     cliente, mensaje = decoded_msj.decode().split(":", 1)
-                    log.info('Enviado por `{}`'.format(cliente))
+                    logging.info('Enviado por `{}`'.format(cliente))
                     print('\nMensaje: {}'.format(mensaje))
 
             except ConnectionResetError:
@@ -213,7 +182,8 @@ class Cliente:
                 sys.exit(1)
 
             except Exception as e:
-                raise e
+                logging.warning('Algo anda mal: %s', e)
+                input()
 
 
 def uso():
@@ -225,8 +195,8 @@ def uso():
 
     {uso}Uso: chat_server.py -l ip -p puerto{euso}
 
-    {}-l --listen{}            - escucha en [ip]:[port] para
-                           conexiones entrantes
+    {}-l --listen{}            - Espesifica la direccion ip para
+                           escuchar conexiones entrantes
 
     {}-p --port{}              - espesifica el puerto a utilizar en el
                            servidor o cliente
@@ -287,7 +257,7 @@ def main():
             assert False, "Opcion desconocida."
 
     if ip and port:
-        Servidor(ip, port)
+        Servidor(ip, port).run()
 
     elif ip_server and port:
         Cliente(ip_server, port)
@@ -297,4 +267,5 @@ def main():
         uso()
 
 
-main()
+if __name__ == '__main__':
+    main()
